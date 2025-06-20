@@ -1,10 +1,9 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-import altair as alt
 
 # --- Streamlit Page Configuration ---
-st.set_page_config(page_title="S&P 500 Analytics Dashboard", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="S&P 500 Analytics Dashboard", page_icon="📈", layout="wide")
 
 # --- HELPER FUNCTIONS for formatting ---
 def format_percentage(pct):
@@ -14,6 +13,10 @@ def format_percentage(pct):
 def format_pe(pe):
     if not isinstance(pe, (int, float)) or pe <= 0: return "N/A"
     return f"{pe:.2f}"
+
+def format_garp(ratio):
+    if not isinstance(ratio, (int, float)) or ratio <= 0: return "N/A"
+    return f"{ratio:.3f}"
 
 # --- EFFICIENT DATA FETCHING & PROCESSING ---
 
@@ -30,7 +33,7 @@ def get_sp500_tickers():
 
 @st.cache_data(ttl=3600)
 def fetch_all_sp500_data(tickers, num_years_cagr):
-    st.info(f"Performing deep scan on {len(tickers)} tickers... (This is efficient but may take a few minutes on first run)")
+    st.info(f"Performing deep scan on {len(tickers)} tickers... (This is efficient and runs only when parameters change)")
     all_data = []
     progress_bar = st.progress(0, text="Analyzing...")
 
@@ -40,11 +43,9 @@ def fetch_all_sp500_data(tickers, num_years_cagr):
             info = ticker.info
             income_statement = ticker.income_stmt
 
-            # --- Gather all raw data points in one go ---
             market_cap = info.get('marketCap')
             if not market_cap or market_cap <= 0: continue
 
-            # --- Calculate CAGR ---
             cagr = None
             if not income_statement.empty and 'Total Revenue' in income_statement.index:
                 revenue = income_statement.loc['Total Revenue'].dropna()
@@ -55,12 +56,9 @@ def fetch_all_sp500_data(tickers, num_years_cagr):
                         cagr = ((ending_revenue / beginning_revenue) ** (1/num_years_cagr)) - 1
             
             all_data.append({
-                'Ticker': ticker_symbol,
-                'Name': info.get('shortName', 'N/A'),
-                'MarketCap': market_cap,
-                'QuarterlyGrowth': info.get('revenueGrowth'),
-                'PERatio': info.get('trailingPE'),
-                'CAGR': cagr
+                'Ticker': ticker_symbol, 'Name': info.get('shortName', 'N/A'),
+                'MarketCap': market_cap, 'QuarterlyGrowth': info.get('revenueGrowth'),
+                'PERatio': info.get('trailingPE'), 'CAGR': cagr
             })
         except Exception:
             continue
@@ -71,8 +69,8 @@ def fetch_all_sp500_data(tickers, num_years_cagr):
     return pd.DataFrame(all_data)
 
 # --- Main App Interface ---
-st.title("⚡ S&P 500 Analytics Dashboard")
-st.markdown("An efficient tool to identify market leaders by size, growth, and value.")
+st.title("📈 S&P 500 Analytics & Portfolio Builder")
+st.markdown("An efficient tool to identify market leaders and build a suggested portfolio based on size, growth, and value.")
 
 if st.button("🔄 Refresh All Data"):
     st.cache_data.clear()
@@ -81,8 +79,6 @@ if st.button("🔄 Refresh All Data"):
 st.header("🏆 Top 10 Leaderboards")
 all_tickers = get_sp500_tickers()
 if all_tickers:
-    # We only need 1 year of data for the top-level leaderboards, so we pass '1' for num_years_cagr
-    # This doesn't affect the CAGR calculation for the growth section, just makes the initial load faster.
     master_df = fetch_all_sp500_data(all_tickers, 1)
 
     col1, col2 = st.columns(2)
@@ -100,51 +96,61 @@ if all_tickers:
         display_rg['QuarterlyGrowth'] = display_rg['QuarterlyGrowth'].apply(format_percentage)
         st.dataframe(display_rg, use_container_width=True, hide_index=True)
 
-st.header("📈 Consistent Growth & Value Screener")
-st.markdown("Find companies with strong, multi-year revenue growth and analyze their current valuation.")
+st.header("✨ Consistent Growth & Value (GARP) Screener")
+st.markdown("Find companies with strong, multi-year revenue growth relative to their price.")
 
 if 'master_df' in locals() and not master_df.empty:
     c1, c2 = st.columns(2)
     years = c1.slider("Revenue CAGR over how many years?", 2, 5, 3, 1)
-    
-    # Re-run the data fetch only if the number of years for CAGR changes
-    # This is an optimization to reuse the fetched data if possible
-    champions_df_raw = fetch_all_sp500_data(all_tickers, years)
-    
-    # Filter by the growth threshold using the calculated CAGR
     growth_threshold = c2.slider("Minimum Required CAGR (%)", 5, 50, 20, 1)
+    
+    champions_df_raw = fetch_all_sp500_data(all_tickers, years)
     champions_df = champions_df_raw[champions_df_raw['CAGR'] >= (growth_threshold / 100.0)].copy()
 
+    # --- NEW: Calculate and sort by GARP Ratio ---
+    champions_df['GARP Ratio'] = 0.0
+    valid_pe = (champions_df['PERatio'].notna()) & (champions_df['PERatio'] > 0)
+    champions_df.loc[valid_pe, 'GARP Ratio'] = champions_df['CAGR'] / champions_df['PERatio']
+    champions_df = champions_df.sort_values(by='GARP Ratio', ascending=False)
+    top_10_garp = champions_df.head(10)
+
     if not champions_df.empty:
-        st.success(f"Found {len(champions_df)} companies meeting the criteria!")
-        
-        # --- Display Table ---
-        display_champions = champions_df[['Name', 'Ticker', 'CAGR', 'PERatio']].rename(columns={'CAGR': 'Revenue CAGR', 'PERatio': 'P/E Ratio'})
+        st.success(f"Found {len(champions_df)} companies meeting the criteria! Displaying top 10 by GARP Ratio.")
+        display_champions = top_10_garp[['Name', 'Ticker', 'CAGR', 'PERatio', 'GARP Ratio']].rename(columns={'CAGR': 'Revenue CAGR', 'PERatio': 'P/E Ratio'})
         display_champions['Revenue CAGR'] = display_champions['Revenue CAGR'].apply(format_percentage)
         display_champions['P/E Ratio'] = display_champions['P/E Ratio'].apply(format_pe)
+        display_champions['GARP Ratio'] = display_champions['GARP Ratio'].apply(format_garp)
         st.dataframe(display_champions, use_container_width=True, hide_index=True)
 
-        # --- Display Scatter Plot ---
-        st.subheader("Growth vs. Value Analysis")
-        chart_df = champions_df[['Name', 'Ticker', 'CAGR', 'PERatio']].copy().dropna()
-        chart_df = chart_df[(chart_df['PERatio'] > 0) & (chart_df['PERatio'] < 200)]
+        # --- NEW: Suggested Portfolio Allocation Section ---
+        st.header("📊 Suggested Portfolio Allocation")
+        portfolio = {}
+        reasons = {}
 
-        if not chart_df.empty:
-            # Base scatter plot layer
-            scatter = alt.Chart(chart_df).mark_circle(size=100, opacity=0.7).encode(
-                x=alt.X('PERatio:Q', scale=alt.Scale(zero=False), title='P/E Ratio (Value)'),
-                y=alt.Y('CAGR:Q', axis=alt.Axis(format='%'), title='Revenue CAGR (Growth)'),
-                color=alt.Color('PERatio:Q', scale=alt.Scale(scheme='viridis'), title='P/E Ratio'),
-                tooltip=['Name', 'Ticker', alt.Tooltip('CAGR:Q', format='.2%'), 'PERatio']
-            )
-            # Text labels layer
-            labels = scatter.mark_text(align='left', baseline='middle', dx=7, fontSize=11).encode(
-                text='Ticker:N',
-                color=alt.value('black') # Make labels always visible
-            )
-            chart = (scatter + labels).properties(
-                title='Growth at a Reasonable Price (GARP) Analysis'
-            ).interactive()
-            st.altair_chart(chart, use_container_width=True)
+        for _, row in top_10_mc.iterrows():
+            portfolio[row['Ticker']] = 5.0
+            reasons[row['Ticker']] = "Top 10 by Market Cap (Core Holding)"
+        
+        for _, row in top_10_rg.iterrows():
+            if row['Ticker'] not in portfolio:
+                portfolio[row['Ticker']] = 1.0
+                reasons[row['Ticker']] = "Top 10 by Quarterly Growth"
+
+        for _, row in top_10_garp.iterrows():
+            if row['Ticker'] not in portfolio:
+                portfolio[row['Ticker']] = 1.0
+                reasons[row['Ticker']] = "Top 10 by Growth/Value (GARP)"
+
+        if portfolio:
+            portfolio_list = [{'Ticker': t, 'Allocation (%)': a, 'Reason': reasons[t]} for t, a in portfolio.items()]
+            portfolio_df = pd.DataFrame(portfolio_list)
+            portfolio_df = pd.merge(portfolio_df, master_df[['Ticker', 'Name']], on='Ticker', how='left')
+            portfolio_df = portfolio_df[['Name', 'Ticker', 'Allocation (%)', 'Reason']]
+
+            st.dataframe(portfolio_df, use_container_width=True, hide_index=True)
+            total_allocation = portfolio_df['Allocation (%)'].sum()
+            st.metric("Total Suggested Allocation", f"{total_allocation:.0f}% of portfolio")
+        else:
+            st.warning("No valid portfolio could be constructed.")
     else:
         st.warning(f"No companies found with at least {growth_threshold}% CAGR over the last {years} years. Try lowering the criteria.")
