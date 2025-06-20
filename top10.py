@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import time
-import numpy as np
+import altair as alt
 
 # --- Streamlit Page Configuration ---
 st.set_page_config(
@@ -83,9 +83,8 @@ def find_consistent_growers(tickers, required_growth_pct, num_years):
         try:
             ticker = yf.Ticker(ticker_symbol)
             income_statement = ticker.income_stmt
-            if income_statement.empty or 'Total Revenue' not in income_statement.index:
-                continue
-
+            if income_statement.empty or 'Total Revenue' not in income_statement.index: continue
+            
             revenue = income_statement.loc['Total Revenue'].dropna().replace(0, pd.NA).dropna()
             if len(revenue) < num_years + 1: continue
 
@@ -95,22 +94,17 @@ def find_consistent_growers(tickers, required_growth_pct, num_years):
             recent_growth = growth.head(num_years)
             if (recent_growth >= required_growth).all():
                 info = ticker.info
-                # --- NEW: Calculate CAGR and get P/E Ratio ---
                 ending_revenue = revenue.iloc[0]
                 beginning_revenue = revenue.iloc[num_years]
                 cagr = ((ending_revenue / beginning_revenue) ** (1/num_years)) - 1 if beginning_revenue > 0 else 0
                 pe_ratio = info.get('trailingPE')
 
                 grower_data = {
-                    'Ticker': ticker_symbol, 
-                    'Name': info.get('shortName', ticker_symbol),
-                    'P/E Ratio': pe_ratio,
-                    'Revenue CAGR': cagr
+                    'Ticker': ticker_symbol, 'Name': info.get('shortName', ticker_symbol),
+                    'P/E Ratio': pe_ratio, 'Revenue CAGR': cagr
                 }
                 consistent_growers.append(grower_data)
-
-        except Exception:
-            continue
+        except Exception: continue
         finally:
             progress_bar.progress((i + 1) / len(tickers), text=f"Analyzing: {ticker_symbol}")
     
@@ -126,7 +120,6 @@ if st.button("🔄 Refresh All Data"):
     st.cache_data.clear()
     st.toast("Data caches cleared! All data will be re-fetched.")
 
-# --- Section 1 & 2: Market Cap and Quarterly Growth ---
 st.header("🏆 Top 10 Leaderboards")
 all_tickers = get_sp500_tickers()
 if all_tickers:
@@ -146,7 +139,6 @@ if all_tickers:
             display_rg['Quarterly Growth'] = display_rg['Quarterly Growth'].apply(format_percentage)
             st.dataframe(display_rg, use_container_width=True, hide_index=True)
 
-# --- Section 3: Consistent Growth Champions ---
 st.header("📈 Consistent Growth & Value Screener")
 st.markdown("Find companies with consistent year-over-year revenue growth and analyze their valuation.")
 
@@ -166,23 +158,26 @@ if all_tickers:
         display_champions = champions_df[['Name', 'Ticker', 'Revenue CAGR', 'P/E Ratio']].copy()
         display_champions['Revenue CAGR'] = display_champions['Revenue CAGR'].apply(format_percentage)
         display_champions['P/E Ratio'] = display_champions['P/E Ratio'].apply(format_pe)
-        st.dataframe(display_champions, use_container_width=True, hide_index=True, column_config={"Name": st.column_config.TextColumn(width="large")})
+        st.dataframe(display_champions, use_container_width=True, hide_index=True)
 
         # --- Display Scatter Plot ---
         st.subheader("Growth vs. Value Analysis")
-        chart_df = champions_df[['Revenue CAGR', 'P/E Ratio', 'Ticker']].copy().dropna()
-        chart_df = chart_df[(chart_df['P/E Ratio'] > 0) & (chart_df['P/E Ratio'] < 200)] # Filter outliers
+        chart_df = champions_df[['Name', 'Ticker', 'Revenue CAGR', 'P/E Ratio']].copy().dropna()
+        chart_df = chart_df[(chart_df['P/E Ratio'] > 0) & (chart_df['P/E Ratio'] < 200)]
 
         if not chart_df.empty:
-            st.scatter_chart(
-                chart_df,
-                x='P/E Ratio',
-                y='Revenue CAGR',
-                size='P/E Ratio', # Optional: make larger P/E bubbles bigger
-                color='#FF4B4B'
-            )
+            # This is the new, robust chart creation block
+            chart = alt.Chart(chart_df).mark_circle(size=80).encode(
+                x=alt.X('P/E Ratio:Q', scale=alt.Scale(zero=False), title='P/E Ratio (Value)'),
+                y=alt.Y('Revenue CAGR:Q', axis=alt.Axis(format='%'), title='Revenue CAGR (Growth)'),
+                color=alt.Color('P/E Ratio:Q', scale=alt.Scale(scheme='redyellowblue', reverse=True)),
+                tooltip=['Name', 'Ticker', alt.Tooltip('Revenue CAGR:Q', format='.2%'), 'P/E Ratio']
+            ).properties(
+                title='Growth at a Reasonable Price (GARP) Analysis'
+            ).interactive()
+
+            st.altair_chart(chart, use_container_width=True)
         else:
             st.info("No companies with positive P/E ratios found to plot.")
-
     else:
         st.warning(f"No companies found with at least {growth_threshold}% annual revenue growth for the last {years} consecutive years. Try lowering the criteria.")
