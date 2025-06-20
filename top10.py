@@ -3,7 +3,7 @@ import pandas as pd
 import yfinance as yf
 
 # --- Streamlit Page Configuration ---
-st.set_page_config(page_title="S&P 500 Analytics Dashboard", page_icon="📈", layout="wide")
+st.set_page_config(page_title="S&P 500 Portfolio Builder", page_icon="🏦", layout="wide")
 
 # --- HELPER FUNCTIONS for formatting ---
 def format_percentage(pct):
@@ -57,7 +57,8 @@ def fetch_all_sp500_data(tickers, num_years_cagr):
             
             all_data.append({
                 'Ticker': ticker_symbol, 'Name': info.get('shortName', 'N/A'),
-                'MarketCap': market_cap, 'QuarterlyGrowth': info.get('revenueGrowth'),
+                'Sector': info.get('sector', 'N/A'), 'MarketCap': market_cap,
+                'QuarterlyGrowth': info.get('revenueGrowth'),
                 'PERatio': info.get('trailingPE'), 'CAGR': cagr
             })
         except Exception:
@@ -69,7 +70,7 @@ def fetch_all_sp500_data(tickers, num_years_cagr):
     return pd.DataFrame(all_data)
 
 # --- Main App Interface ---
-st.title("📈 S&P 500 Analytics & Portfolio Builder")
+st.title("🏦 S&P 500 Analytics & Portfolio Builder")
 st.markdown("An efficient tool to identify market leaders and build a suggested portfolio based on size, growth, and value.")
 
 if st.button("🔄 Refresh All Data"):
@@ -85,16 +86,12 @@ if all_tickers:
     with col1:
         st.subheader("By Market Capitalization")
         top_10_mc = master_df.sort_values(by='MarketCap', ascending=False).head(10)
-        total_cap = master_df['MarketCap'].sum()
-        top_10_mc['% of Index'] = (top_10_mc['MarketCap'] / total_cap)
-        st.dataframe(top_10_mc[['Name', 'Ticker', '% of Index']].rename(columns={'% of Index': 'Index Weight'}), use_container_width=True, hide_index=True)
+        st.dataframe(top_10_mc[['Name', 'Ticker', 'Sector']], use_container_width=True, hide_index=True)
 
     with col2:
         st.subheader("By Quarterly Revenue Growth")
         top_10_rg = master_df.dropna(subset=['QuarterlyGrowth']).sort_values(by='QuarterlyGrowth', ascending=False).head(10)
-        display_rg = top_10_rg[['Name', 'Ticker', 'QuarterlyGrowth']].copy()
-        display_rg['QuarterlyGrowth'] = display_rg['QuarterlyGrowth'].apply(format_percentage)
-        st.dataframe(display_rg, use_container_width=True, hide_index=True)
+        st.dataframe(top_10_rg[['Name', 'Ticker', 'Sector', 'QuarterlyGrowth']].rename(columns={'QuarterlyGrowth': 'Quarterly Growth'}), use_container_width=True, hide_index=True)
 
 st.header("✨ Consistent Growth & Value (GARP) Screener")
 st.markdown("Find companies with strong, multi-year revenue growth relative to their price.")
@@ -106,17 +103,27 @@ if 'master_df' in locals() and not master_df.empty:
     
     champions_df_raw = fetch_all_sp500_data(all_tickers, years)
     champions_df = champions_df_raw[champions_df_raw['CAGR'] >= (growth_threshold / 100.0)].copy()
-
-    # --- NEW: Calculate and sort by GARP Ratio ---
-    champions_df['GARP Ratio'] = 0.0
+    
     valid_pe = (champions_df['PERatio'].notna()) & (champions_df['PERatio'] > 0)
+    champions_df['GARP Ratio'] = 0.0
     champions_df.loc[valid_pe, 'GARP Ratio'] = champions_df['CAGR'] / champions_df['PERatio']
     champions_df = champions_df.sort_values(by='GARP Ratio', ascending=False)
-    top_10_garp = champions_df.head(10)
 
     if not champions_df.empty:
-        st.success(f"Found {len(champions_df)} companies meeting the criteria! Displaying top 10 by GARP Ratio.")
-        display_champions = top_10_garp[['Name', 'Ticker', 'CAGR', 'PERatio', 'GARP Ratio']].rename(columns={'CAGR': 'Revenue CAGR', 'PERatio': 'P/E Ratio'})
+        # --- NEW: Sector Multiselect Filter ---
+        all_sectors = sorted(champions_df['Sector'].dropna().unique())
+        selected_sectors = st.multiselect(
+            'Filter GARP Champions by Sector:',
+            options=all_sectors,
+            default=all_sectors
+        )
+        
+        # Filter the DataFrame based on selection
+        filtered_champions_df = champions_df[champions_df['Sector'].isin(selected_sectors)]
+        top_10_garp = filtered_champions_df.head(10)
+
+        st.success(f"Displaying top 10 GARP champions from selected sectors.")
+        display_champions = top_10_garp[['Name', 'Ticker', 'Sector', 'CAGR', 'PERatio', 'GARP Ratio']].rename(columns={'CAGR': 'Revenue CAGR', 'PERatio': 'P/E Ratio'})
         display_champions['Revenue CAGR'] = display_champions['Revenue CAGR'].apply(format_percentage)
         display_champions['P/E Ratio'] = display_champions['P/E Ratio'].apply(format_pe)
         display_champions['GARP Ratio'] = display_champions['GARP Ratio'].apply(format_garp)
@@ -127,6 +134,7 @@ if 'master_df' in locals() and not master_df.empty:
         portfolio = {}
         reasons = {}
 
+        # The allocation logic now uses the potentially filtered top_10_garp DataFrame
         for _, row in top_10_mc.iterrows():
             portfolio[row['Ticker']] = 5.0
             reasons[row['Ticker']] = "Top 10 by Market Cap (Core Holding)"
@@ -144,13 +152,11 @@ if 'master_df' in locals() and not master_df.empty:
         if portfolio:
             portfolio_list = [{'Ticker': t, 'Allocation (%)': a, 'Reason': reasons[t]} for t, a in portfolio.items()]
             portfolio_df = pd.DataFrame(portfolio_list)
-            portfolio_df = pd.merge(portfolio_df, master_df[['Ticker', 'Name']], on='Ticker', how='left')
-            portfolio_df = portfolio_df[['Name', 'Ticker', 'Allocation (%)', 'Reason']]
-
+            portfolio_df = pd.merge(portfolio_df, master_df[['Ticker', 'Name', 'Sector']], on='Ticker', how='left')
+            portfolio_df = portfolio_df[['Name', 'Ticker', 'Sector', 'Allocation (%)', 'Reason']]
             st.dataframe(portfolio_df, use_container_width=True, hide_index=True)
             total_allocation = portfolio_df['Allocation (%)'].sum()
             st.metric("Total Suggested Allocation", f"{total_allocation:.0f}% of portfolio")
-        else:
-            st.warning("No valid portfolio could be constructed.")
+
     else:
         st.warning(f"No companies found with at least {growth_threshold}% CAGR over the last {years} years. Try lowering the criteria.")
